@@ -6,8 +6,10 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_absolute_error
 from sklearn.pipeline import Pipeline
+from sklearn.base import clone
 
 from src.data_loader import load_master
+
 
 FEATURE_COLUMNS = [
     "precip_mm",
@@ -20,6 +22,7 @@ FEATURE_COLUMNS = [
     "nccpi_crop",
 ]
 
+
 def prepare_ranking_data(crop="CORN"):
     """Separate development data from final testing data."""
     master = load_master()
@@ -27,7 +30,7 @@ def prepare_ranking_data(crop="CORN"):
     crop_data = master.loc[
         (master["crop"] == crop)
         & master["year"].between(2000, 2025)
-        ].copy()
+    ].copy()
 
     if crop_data.empty:
         raise ValueError(f"No data found for crop: {crop}")
@@ -39,8 +42,8 @@ def prepare_ranking_data(crop="CORN"):
     )
 
     crop_data["has_reported_yield"] = (
-            crop_data["yield_status"].eq("reported")
-            & crop_data["yield_per_acre"].notna()
+        crop_data["yield_status"].eq("reported")
+        & crop_data["yield_per_acre"].notna()
     )
 
     train_data = crop_data.loc[
@@ -84,7 +87,7 @@ def add_training_only_trends(train_data, test_data, min_years=10):
                 reported["year"].to_numpy(dtype=float) - 2000,
                 reported["yield_per_acre"].to_numpy(dtype=float),
                 deg=1,
-                )
+            )
 
         fitted_trends.append({
             "fips": fips,
@@ -107,14 +110,14 @@ def add_training_only_trends(train_data, test_data, min_years=10):
         data["trend_eligible"] = data["trend_slope"].notna()
 
         data["expected_yield_train_trend"] = (
-                data["trend_intercept"]
-                + data["trend_slope"] * (data["year"] - 2000)
+            data["trend_intercept"]
+            + data["trend_slope"] * (data["year"] - 2000)
         )
 
         usable = (
-                data["has_reported_yield"]
-                & data["trend_eligible"]
-                & (data["expected_yield_train_trend"] > 0)
+            data["has_reported_yield"]
+            & data["trend_eligible"]
+            & (data["expected_yield_train_trend"] > 0)
         )
 
         data["yield_anomaly_train_pct"] = np.nan
@@ -150,6 +153,7 @@ def print_summary(data, label):
 
 
 if __name__ == "__main__":
+    # Full development and reserved testing periods.
     train_data, test_data = prepare_ranking_data(crop="CORN")
 
     train_data, test_data = add_training_only_trends(
@@ -180,8 +184,8 @@ if __name__ == "__main__":
             "Counties with valid new anomalies: "
             f"{valid['fips'].nunique():,}"
         )
-    
-    # Start from fresh data without previously added trend columns.
+
+    # Fresh data for internal model fitting and validation.
     development_data, _ = prepare_ranking_data(crop="CORN")
 
     fit_data = development_data.loc[
@@ -214,7 +218,7 @@ if __name__ == "__main__":
             "Counties with valid loss outcomes: "
             f"{usable['fips'].nunique():,}"
         )
-        
+
     missing_columns = [
         column
         for column in FEATURE_COLUMNS
@@ -240,24 +244,24 @@ if __name__ == "__main__":
         .sum()
         .to_string()
     )
-    
+
     # Evaluate only records with a known loss outcome.
     model_validation_rows = validation_data.loc[
         validation_data["yield_loss_pct"].notna()
     ].copy()
-    
+
     if model_fit_rows.empty or model_validation_rows.empty:
         raise ValueError(
             "Fitting and validation both need usable loss outcomes."
         )
-    
+
     X_fit = model_fit_rows[FEATURE_COLUMNS]
     y_fit = model_fit_rows["yield_loss_pct"]
-    
+
     X_validation = model_validation_rows[FEATURE_COLUMNS]
     y_validation = model_validation_rows["yield_loss_pct"]
-    
-    # Learn any replacement values from fitting data only.
+
+    # Fit preprocessing and the model using fitting data only.
     model = Pipeline([
         ("imputer", SimpleImputer(strategy="median")),
         (
@@ -271,31 +275,31 @@ if __name__ == "__main__":
             ),
         ),
     ])
-    
+
     model.fit(X_fit, y_fit)
-    
+
     validation_predictions = model.predict(X_validation)
-    
+
     model_validation_rows["predicted_loss_pct"] = (
         validation_predictions
     )
-    
-    # Simple prediction-error baseline: always predict the fitting median.
+
+    # Constant-median prediction-error baseline.
     baseline = DummyRegressor(strategy="median")
     baseline.fit(X_fit, y_fit)
-    
+
     baseline_predictions = baseline.predict(X_validation)
-    
+
     model_mae = mean_absolute_error(
         y_validation,
         validation_predictions,
     )
-    
+
     baseline_mae = mean_absolute_error(
         y_validation,
         baseline_predictions,
     )
-    
+
     print("\nFIRST MODEL VALIDATION")
     print("Fitting years: 2000–2010")
     print("Validation years: 2011–2015")
@@ -307,12 +311,12 @@ if __name__ == "__main__":
         f"Median baseline MAE: {baseline_mae:.2f} percentage points"
     )
 
-    # Ranking evaluation settings, not official funding thresholds.
+    # Prototype evaluation settings, not official funding thresholds.
     selection_fraction = 0.20
     severe_loss_threshold = 20.0
     random_repeats = 200
 
-    # Rainfall baseline uses only the model-fitting period.
+    # Rainfall reference uses only the model-fitting period.
     rainfall_reference = (
         fit_data.groupby(["fips", "crop"], as_index=False)
         .agg(fit_mean_precip_mm=("precip_mm", "mean"))
@@ -393,6 +397,7 @@ if __name__ == "__main__":
             random_loss_sums.append(
                 selected["yield_loss_pct"].sum()
             )
+
             random_severe_counts.append(
                 (
                     selected["yield_loss_pct"]
@@ -431,9 +436,309 @@ if __name__ == "__main__":
     print(f"Comparable county–year rows: {len(ranking_data):,}")
     print("Selection: top 20% per state–year, rounded up")
     print("Severe loss: observed yield loss of at least 20%")
-    print(f"Random baseline: average of {random_repeats} draws per group")
+    print(
+        f"Random baseline: average of "
+        f"{random_repeats} draws per group"
+    )
     print(
         summary[
             ["slots", "mean_selected_loss_pct", "severe_share_pct"]
-        ].round(2).to_string()
+        ]
+        .round(2)
+        .to_string()
+    )
+
+    # Print the detailed breakdown after ranking_results exists.
+    ranking_results["mean_selected_loss_pct"] = (
+        ranking_results["selected_loss_sum"]
+        / ranking_results["slots"]
+    )
+
+    ranking_results["severe_share_pct"] = (
+        ranking_results["severe_count"]
+        / ranking_results["slots"]
+    ) * 100
+
+    print("\nRANKING RESULTS BY STATE AND YEAR")
+    print(
+        ranking_results[
+            [
+                "state",
+                "year",
+                "method",
+                "slots",
+                "mean_selected_loss_pct",
+                "severe_share_pct",
+            ]
+        ]
+        .sort_values(["state", "year", "method"])
+        .round(2)
+        .to_string(index=False)
+    )
+    
+    # Sensitivity check: retain the original results above.
+    without_2012 = ranking_results.loc[
+        ranking_results["year"] != 2012
+    ]
+
+    sensitivity_summary = (
+        without_2012.groupby("method")[
+            ["slots", "selected_loss_sum", "severe_count"]
+        ]
+        .sum()
+    )
+
+    sensitivity_summary["mean_selected_loss_pct"] = (
+        sensitivity_summary["selected_loss_sum"]
+        / sensitivity_summary["slots"]
+    )
+
+    sensitivity_summary["severe_share_pct"] = (
+        sensitivity_summary["severe_count"]
+        / sensitivity_summary["slots"]
+    ) * 100
+
+    print("\nVALIDATION SENSITIVITY CHECK — EXCLUDING 2012")
+    print("Diagnostic only; original validation results remain unchanged.")
+    print(
+        sensitivity_summary[
+            ["slots", "mean_selected_loss_pct", "severe_share_pct"]
+        ]
+        .round(2)
+        .to_string()
+    )
+    
+    # Final evaluation: keep all prototype settings unchanged.
+    final_train_rows = train_data.loc[
+        train_data["yield_loss_pct"].notna()
+    ].copy()
+
+    final_test_rows = test_data.loc[
+        test_data["yield_loss_pct"].notna()
+    ].copy()
+
+    if final_train_rows.empty or final_test_rows.empty:
+        raise ValueError(
+            "Final training and testing both need known loss outcomes."
+        )
+
+    X_final_train = final_train_rows[FEATURE_COLUMNS]
+    y_final_train = final_train_rows["yield_loss_pct"]
+
+    X_final_test = final_test_rows[FEATURE_COLUMNS]
+    y_final_test = final_test_rows["yield_loss_pct"]
+
+    # Clone creates fresh estimators with the same settings.
+    final_model = clone(model)
+    final_baseline = clone(baseline)
+
+    final_model.fit(X_final_train, y_final_train)
+    final_baseline.fit(X_final_train, y_final_train)
+
+    final_test_rows["predicted_loss_pct"] = final_model.predict(
+        X_final_test
+    )
+
+    final_baseline_predictions = final_baseline.predict(
+        X_final_test
+    )
+
+    final_model_mae = mean_absolute_error(
+        y_final_test,
+        final_test_rows["predicted_loss_pct"],
+    )
+
+    final_baseline_mae = mean_absolute_error(
+        y_final_test,
+        final_baseline_predictions,
+    )
+
+    print("\nFINAL MODEL TEST")
+    print("Training years: 2000–2015")
+    print("Testing years: 2016–2025")
+    print(f"Evaluated county–year rows: {len(final_test_rows):,}")
+    print(
+        f"Evaluated counties: "
+        f"{final_test_rows['fips'].nunique():,}"
+    )
+    print(
+        f"Random forest MAE: "
+        f"{final_model_mae:.2f} percentage points"
+    )
+    print(
+        f"Median baseline MAE: "
+        f"{final_baseline_mae:.2f} percentage points"
+    )
+
+    # Recalculate rainfall references using 2000–2015 only.
+    final_rainfall_reference = (
+        train_data.groupby(["fips", "crop"], as_index=False)
+        .agg(fit_mean_precip_mm=("precip_mm", "mean"))
+    )
+
+    final_ranking_data = final_test_rows.merge(
+        final_rainfall_reference,
+        on=["fips", "crop"],
+        how="left",
+        validate="many_to_one",
+    )
+
+    final_eligible = (
+        final_ranking_data["precip_mm"].notna()
+        & final_ranking_data["fit_mean_precip_mm"].notna()
+        & (final_ranking_data["fit_mean_precip_mm"] > 0)
+        & final_ranking_data["predicted_loss_pct"].notna()
+    )
+
+    final_ranking_data = final_ranking_data.loc[
+        final_eligible
+    ].copy()
+
+    if final_ranking_data.empty:
+        raise ValueError(
+            "No comparable rows for final ranking evaluation."
+        )
+
+    final_ranking_data["rainfall_shortage_pct"] = (
+        1
+        - final_ranking_data["precip_mm"]
+        / final_ranking_data["fit_mean_precip_mm"]
+    ) * 100
+
+    final_ranking_results = []
+    final_rng = np.random.default_rng(42)
+
+    for (state, year), group in final_ranking_data.groupby(
+        ["state_alpha", "year"]
+    ):
+        group = group.sort_values("fips").copy()
+
+        slots = max(
+            1,
+            int(np.ceil(len(group) * selection_fraction)),
+        )
+
+        model_selected = group.sort_values(
+            ["predicted_loss_pct", "fips"],
+            ascending=[False, True],
+        ).head(slots)
+
+        rainfall_selected = group.sort_values(
+            ["rainfall_shortage_pct", "fips"],
+            ascending=[False, True],
+        ).head(slots)
+
+        for method, selected in [
+            ("Model", model_selected),
+            ("Rainfall only", rainfall_selected),
+        ]:
+            final_ranking_results.append({
+                "state": state,
+                "year": year,
+                "method": method,
+                "slots": slots,
+                "selected_loss_sum": selected["yield_loss_pct"].sum(),
+                "severe_count": (
+                    selected["yield_loss_pct"]
+                    >= severe_loss_threshold
+                ).sum(),
+            })
+
+        random_loss_sums = []
+        random_severe_counts = []
+
+        for _ in range(random_repeats):
+            selected = group.sample(
+                n=slots,
+                random_state=int(
+                    final_rng.integers(0, 2**31 - 1)
+                ),
+            )
+
+            random_loss_sums.append(
+                selected["yield_loss_pct"].sum()
+            )
+
+            random_severe_counts.append(
+                (
+                    selected["yield_loss_pct"]
+                    >= severe_loss_threshold
+                ).sum()
+            )
+
+        final_ranking_results.append({
+            "state": state,
+            "year": year,
+            "method": "Random",
+            "slots": slots,
+            "selected_loss_sum": np.mean(random_loss_sums),
+            "severe_count": np.mean(random_severe_counts),
+        })
+
+    final_ranking_results = pd.DataFrame(
+        final_ranking_results
+    )
+
+    final_summary = (
+        final_ranking_results.groupby("method")[
+            ["slots", "selected_loss_sum", "severe_count"]
+        ]
+        .sum()
+    )
+
+    final_summary["mean_selected_loss_pct"] = (
+        final_summary["selected_loss_sum"]
+        / final_summary["slots"]
+    )
+
+    final_summary["severe_share_pct"] = (
+        final_summary["severe_count"]
+        / final_summary["slots"]
+    ) * 100
+
+    print("\nFINAL TEST RANKING COMPARISON")
+    print("Years: 2016–2025")
+    print(
+        f"Comparable county–year rows: "
+        f"{len(final_ranking_data):,}"
+    )
+    print("Selection: top 20% per state–year, rounded up")
+    print("Severe loss: observed yield loss of at least 20%")
+    print(
+        f"Random baseline: average of "
+        f"{random_repeats} draws per group"
+    )
+    print(
+        final_summary[
+            ["slots", "mean_selected_loss_pct", "severe_share_pct"]
+        ]
+        .round(2)
+        .to_string()
+    )
+
+    final_ranking_results["mean_selected_loss_pct"] = (
+        final_ranking_results["selected_loss_sum"]
+        / final_ranking_results["slots"]
+    )
+
+    final_ranking_results["severe_share_pct"] = (
+        final_ranking_results["severe_count"]
+        / final_ranking_results["slots"]
+    ) * 100
+
+    print("\nFINAL TEST RESULTS BY STATE AND YEAR")
+    print(
+        final_ranking_results[
+            [
+                "state",
+                "year",
+                "method",
+                "slots",
+                "mean_selected_loss_pct",
+                "severe_share_pct",
+            ]
+        ]
+        .sort_values(["state", "year", "method"])
+        .round(2)
+        .to_string(index=False)
     )
